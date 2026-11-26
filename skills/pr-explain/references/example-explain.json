@@ -1,0 +1,88 @@
+{
+  "headline": "Customers can cancel an order for 30 minutes after placing it, and get their money back",
+  "whatChanged": "**Before**, an order could only be edited, for 15 minutes, and cancelling meant contacting support.\n\n**After**, a placed order can be cancelled for 30 minutes, as long as it hasn't shipped. Cancelling marks it cancelled and refunds the payment. A new `POST /orders/:id/cancel` endpoint does it for the signed-in customer.\n\nTwo things need fixing first: nothing adds the column the cancel writes to, and the refund can happen twice. Read it in two steps: the rule, then the endpoint:",
+  "layers": [
+    {
+      "title": "Decide when an order can be cancelled",
+      "summary": "A 30-minute window on placed orders, and a cancel that marks the order and refunds it.",
+      "detail": "Shipped and delivered orders can't be cancelled. The window is counted from `placed_at`, the same moment the 15-minute edit window uses.",
+      "files": ["app/models/order.rb", "spec/models/order_spec.rb"],
+      "diagram": {
+        "kind": "state",
+        "title": "An order's statuses after this change",
+        "mermaid": "stateDiagram-v2\n  [*] --> placed\n  placed --> cancelled: within 30 min\n  placed --> shipped\n  shipped --> delivered\n  cancelled --> [*]\n  delivered --> [*]",
+        "caption": "`cancelled` is new. It can only be reached from `placed`."
+      }
+    },
+    {
+      "title": "Add the cancel endpoint",
+      "summary": "A member route and a controller action that cancel the customer's own order.",
+      "files": ["app/controllers/orders_controller.rb", "config/routes.rb"],
+      "dependsOn": [1],
+      "diagram": {
+        "kind": "sequence",
+        "title": "Cancelling an order",
+        "mermaid": "sequenceDiagram\n  participant C as Customer\n  participant OC as OrdersController\n  participant O as Order\n  participant P as Payment\n  C->>OC: POST /orders/:id/cancel\n  OC->>O: cancellable?\n  OC->>O: cancel!\n  O->>O: status cancelled\n  O->>P: refund!\n  OC-->>C: redirect, \"Order cancelled.\""
+      }
+    }
+  ],
+  "ranges": [
+    {"file": "app/models/order.rb", "side": "new", "start": 5, "end": 7, "title": "The window and its error", "summary": "30 minutes, twice the edit window. Cancelling outside it raises `NotCancellable`.", "complexity": "low"},
+    {"file": "app/models/order.rb", "side": "new", "start": 13, "end": 13, "title": "A new status", "summary": "`cancelled` joins the enum. Anything that lists or counts orders by status will start seeing it.", "complexity": "medium"},
+    {"file": "app/models/order.rb", "side": "new", "start": 19, "end": 22, "title": "cancellable?", "summary": "Placed, and placed less than 30 minutes ago. It rebuilds the time check the model already has (F3).", "complexity": "medium"},
+    {"file": "app/models/order.rb", "side": "new", "start": 24, "end": 31, "title": "cancel!", "summary": "Marks the order cancelled and refunds the payment in one transaction. This is where the money moves, so read it slowly (F1, F2).", "complexity": "high"},
+    {"file": "spec/models/order_spec.rb", "side": "new", "start": 11, "end": 23, "title": "Specs for cancel!", "summary": "A paid order cancelled at 20 minutes is refunded, and a shipped one is refused. Nothing tests the 30-minute edge.", "complexity": "low"},
+    {"file": "app/controllers/orders_controller.rb", "side": "new", "start": 14, "end": 19, "title": "The cancel action", "summary": "Answers 422 when the order can't be cancelled, otherwise cancels and redirects. `set_order` already limits it to the customer's own orders.", "complexity": "medium"},
+    {"file": "config/routes.rb", "side": "new", "start": 2, "end": 4, "title": "POST /orders/:id/cancel", "summary": "A member route next to show and update.", "complexity": "low"}
+  ],
+  "findings": [
+    {
+      "id": "F1",
+      "file": "app/models/order.rb", "side": "new", "start": 28, "end": 28,
+      "type": "potential_issue", "severity": "critical", "category": "functional", "effort": "low", "reward": "high",
+      "title": "No migration adds `cancelled_at`, so every cancel fails",
+      "body": "`cancel!` writes `cancelled_at`, but the PR has no migration and the column doesn't exist. Every cancel raises, so a customer who presses Cancel gets an error page and keeps an order they meant to stop. Add a migration with a nullable `cancelled_at` datetime and ship it with this change."
+    },
+    {
+      "id": "F2",
+      "file": "app/models/order.rb", "side": "new", "start": 27, "end": 30,
+      "type": "potential_issue", "severity": "major", "category": "data", "effort": "low", "reward": "high",
+      "title": "The refund runs inside the transaction, so it can happen twice",
+      "body": "The refund is a call to the payment provider, and it can't be rolled back. If it succeeds and the transaction then fails, the order still shows placed while the money has gone back. Pressing Cancel again refunds a second time. Commit the status first, then refund, and give the refund an idempotency key so a retry can't pay out twice.",
+      "suggestion": "    update!(status: \"cancelled\", cancelled_at: Time.current)\n    payment&.refund!(idempotency_key: \"order-#{id}-cancel\")"
+    },
+    {
+      "id": "F3",
+      "file": "app/models/order.rb", "side": "new", "start": 21, "end": 21,
+      "type": "refactor", "severity": "minor", "category": "maintainability", "effort": "low", "reward": "high",
+      "title": "`cancellable?` rebuilds the time check `TimeWindow` already has",
+      "body": "`editable?`, two methods up, uses `within_window?` for the same kind of check. `cancellable?` writes its own copy. A fix to one, like how the window treats time zones, won't reach the other. Use the shared check.",
+      "suggestion": "    placed? && within_window?(placed_at, CANCEL_WINDOW)",
+      "existing": [{"file": "app/models/concerns/time_window.rb", "line": 3, "symbol": "TimeWindow#within_window?", "note": "already used by editable?"}]
+    }
+  ],
+  "attention": [
+    {"band": "blocker", "priority": "p1", "severity": "critical", "title": "Add the cancelled_at migration", "body": "Without it, every cancel fails.", "finding": "F1"},
+    {"band": "high", "priority": "p2", "severity": "major", "title": "Move the refund out of the transaction", "body": "A retry after a failed commit refunds twice.", "finding": "F2"},
+    {"band": "advisory", "priority": "p3", "severity": "minor", "title": "Use within_window? for the cancel check", "body": "One time check instead of two.", "finding": "F3"}
+  ],
+  "readiness": {
+    "band": "blocked",
+    "confidence": "high",
+    "summary": "The rule and the endpoint are right, but cancelling fails until a migration adds `cancelled_at`, and the refund can pay out twice.",
+    "drivers": [
+      {"text": "No migration for cancelled_at", "severity": "critical", "status": "open"},
+      {"text": "Refund inside the transaction", "severity": "major", "status": "open"},
+      {"text": "Only the customer's own orders can be cancelled", "severity": "minor", "status": "addressed"}
+    ]
+  },
+  "blastRadius": {
+    "summary": "The change reaches customers through one new route. The new `cancelled` status also reaches anything that lists orders by status.",
+    "items": [
+      {"kind": "consumer", "symbol": "POST /orders/:id/cancel", "file": "config/routes.rb", "riskLevel": "critical", "risk": "Fails on every call until the migration ships (F1).", "confidence": "high",
+       "where": [{"file": "config/routes.rb", "line": 3, "how": "rails", "confidence": "high"}, {"file": "app/controllers/orders_controller.rb", "line": 17, "how": "index", "confidence": "high"}]},
+      {"kind": "dependency", "symbol": "TimeWindow#within_window?", "riskLevel": "info", "confidence": "high", "note": "The shared time check `cancellable?` should use (F3).",
+       "where": [{"file": "app/models/concerns/time_window.rb", "line": 3, "how": "search", "confidence": "high"}]}
+    ]
+  }
+}

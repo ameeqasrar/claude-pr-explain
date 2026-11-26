@@ -1,0 +1,15 @@
+{
+  "name": "pr-explain",
+  "version": "1.0.1",
+  "description": "Explain a pull request, or every PR for one ticket, as an interactive review page: layers in reading order, diffs, summaries, findings, merge readiness and a blast radius map.",
+  "author": {
+    "name": "ameeqasrar",
+    "url": "https://github.com/ameeqasrar"
+  },
+  "keywords": [
+    "code-review",
+    "pull-request",
+    "blast-radius",
+    "artifact"
+  ]
+}

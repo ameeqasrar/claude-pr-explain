@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-pr-explain",
+  "description": "The pr-explain plugin for Claude Code.",
+  "owner": {
+    "name": "ameeqasrar",
+    "url": "https://github.com/ameeqasrar"
+  },
+  "plugins": [
+    {
+      "name": "pr-explain",
+      "description": "Explain a pull request, or every PR for one ticket, as an interactive review page.",
+      "source": "./",
+      "category": "development"
+    }
+  ]
+}
